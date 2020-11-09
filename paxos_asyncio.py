@@ -216,7 +216,7 @@ class Processor(ABC):
             await self.action_loop()
 
     async def action_loop(self) -> None:
-        raise NotImplementedError
+        pass
 
 
 class Acceptor(Processor):
@@ -249,7 +249,7 @@ class Acceptor(Processor):
             self.accepted_value = msg.proposal
 
     async def action_loop(self) -> None:
-        pass
+        super().action_loop()
 
 
 class Proposer(Processor):
@@ -285,7 +285,7 @@ class Proposer(Processor):
                 await self.send_message_to(a, response)
 
     async def action_loop(self) -> None:
-        #await super().action_loop()
+        await super().action_loop()
         if self.loop_num % self.propose_every == 0:
             await self.generate_proposal()
         self.loop_num += 1
@@ -317,6 +317,7 @@ class SleepyProposer(Proposer):
     async def run(self):
         await asyncio.sleep(self.sleep_for)
         await super().run()
+
 
 class Learner(Processor):
 

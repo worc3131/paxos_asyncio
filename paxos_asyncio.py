@@ -256,23 +256,16 @@ class Proposer(Acceptor):
 
     def __init__(self,
                  coordinator: Coordinator,
-                 proposal_generator: ProposalGenerator) -> None:
+                 proposal_generator: ProposalGenerator,
+                 propose_every: int) -> None:
         super().__init__(coordinator)
         self.proposal_generator = proposal_generator
+        self.propose_every = propose_every
+        self.loop_num = 0
         self.proposal: Optional[int] = None
         self.number: Optional[int] = None
         self.acceptors: Optional[List[int]] = None
         self.promises: Dict[int, PromiseMessage] = {}
-        self._i_think_im_leader = False
-        #self.handle_message.register(PromiseMessage, self._handle_promise_message)
-
-    @property
-    def i_think_im_leader(self) -> bool:
-        return self._i_think_im_leader
-
-    @i_think_im_leader.setter
-    def i_think_im_leader(self, x: bool) -> None:
-        self._i_think_im_leader = x
 
     @message_handler_decorator
     async def _handle_promise_message(self,
@@ -293,8 +286,9 @@ class Proposer(Acceptor):
 
     async def action_loop(self) -> None:
         await super().action_loop()
-        if self.proposal is None:
+        if self.loop_num % self.propose_every == 0:
             await self.generate_proposal()
+        self.loop_num += 1
 
     async def generate_proposal(self) -> None:
         p, n = self.proposal_generator.get_proposal()
@@ -308,8 +302,15 @@ class Proposer(Acceptor):
             await self.send_message_to(a, PrepareMessage(n))
 
 
+class OneShotProposer(Proposer):
+    def __init__(self,
+                 coordinator: Coordinator,
+                 proposal_generator: ProposalGenerator) -> None:
+        super().__init__(coordinator, proposal_generator, 2**32)
+
+
 class SleepyProposer(Proposer):
-    def __init__(self, sleep_for=20, *args, **kwargs):
+    def __init__(self, *args, sleep_for=20, **kwargs):
         super().__init__(*args, **kwargs)
         self.sleep_for = sleep_for
 
@@ -383,12 +384,13 @@ async def run_paxos() -> None:
     loop = asyncio.get_event_loop()
     coord = Coordinator()
     processors: List[Processor] = []
+    prop_args = lambda i: [coord, IncProposalGenerator(i), 30]
     for i in range(4):
-        mess_gen = IncProposalGenerator(i)
-        processors.append(Proposer(coord, mess_gen))
+        processors.append(Proposer(*prop_args(i)))
     for i in range(4):
         processors.append(Acceptor(coord))
-    processors.append(SleepyProposer(20, coord, IncProposalGenerator(99)))
+    processors.append(SleepyProposer(*prop_args(99), sleep_for=10))
+    processors.append(SleepyProposer(*prop_args(120), sleep_for=20))
     processors.append(Monitor(coord))
     tasks = [p.run() for p in processors]
     with db_on_exception():

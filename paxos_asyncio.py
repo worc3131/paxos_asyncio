@@ -8,11 +8,11 @@ import functools
 import math
 import random
 import typing
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
-FUZZ_MAX_TIME = 0.5
+FUZZ_MAX_TIME = 1
 PROB_FREEZE = 0.01
-FREEZE_SCALE = 100
+FREEZE_SCALE = 10
 PROB_KILL = 0.01
 PROB_MESSAGE_LOSS = 0.01
 
@@ -66,13 +66,37 @@ class Coordinator:
         else:
             self.processors[letter.to].mailbox.append(letter)
 
-    def get_quorum_of_acceptors(self, exclude) -> List[int]:
-        acceptors = [x.id for x in self.processors
+    def _get_acceptors(self, exclude: List[Processor] = []) -> List[Acceptor]:
+        return [x for x in self.processors
                      if isinstance(x, Acceptor)
                      and x not in exclude]
-        # for now just return all
-        return acceptors
 
+    def get_quorum_of_acceptor_ids(
+            self,
+            exclude: List[Processor] = []) -> List[int]:
+        acceptors = self._get_acceptors(exclude=exclude)
+        min_num = int(0.5*len(acceptors)+1)
+        max_num = len(acceptors)
+        num = int(1*len(acceptors))  # arbitrary
+        num = min(max_num, max(min_num, num))
+        return [x.id for x in random.sample(acceptors, num)]
+
+    def report_accepted(self):
+        acceptors = self._get_acceptors()
+
+        def calc_status(x, item):
+            val = getattr(x, item)
+            if val is None:
+                return ''
+            return str(val * (1 if x.alive else -1))
+        for item in ['accepted_value', 'accepted_number']:
+            status = ','.join(calc_status(x, 'accepted_value')
+                              for x in acceptors)
+            self.log(item + ' status: ' + status)
+        done = acceptors[0].accepted_value is not None
+        done = done and all_equal(x.accepted_value for x in acceptors)
+        done = done or not any(x.alive for x in acceptors)
+        return not done
 
 class ProposalGenerator(ABC):
 
@@ -87,7 +111,7 @@ class IncProposalGenerator(ProposalGenerator):
 
     def get_proposal(self) -> Tuple[int, int]:
         result = (self.x, self.x)
-        self.x += 1
+        self.x += 1000
         return result
 
 
@@ -201,8 +225,7 @@ class Acceptor(Processor):
     def __init__(self, coordinator: Coordinator) -> None:
         super().__init__(coordinator)
         self.highest_number_seen: Optional[int] = None
-        self.prev_acc_number: Optional[int] = None
-        self.prev_acc_value: Optional[int] = None
+        self.accepted_number: Optional[int] = None # potentially previously accepted
         self.accepted_value: Optional[int] = None
 
     @message_handler_decorator
@@ -212,8 +235,8 @@ class Acceptor(Processor):
                 or self.highest_number_seen < number:
             self.highest_number_seen = number
             response = PromiseMessage(number,
-                                 self.prev_acc_number,
-                                 self.prev_acc_value)
+                                 self.accepted_number,
+                                 self.accepted_value)
             await self.send_message_to(frm, response)
         else:
             # TODO optional: send a denial
@@ -223,9 +246,8 @@ class Acceptor(Processor):
     async def _handle_accept_message(self, msg: AcceptMessage, frm: int) -> None:
         if msg.number == self.highest_number_seen:
             self.log(f'accepted {msg.proposal}')
+            self.accepted_number = msg.number
             self.accepted_value = msg.proposal
-
-
 
     async def action_loop(self) -> None:
         pass
@@ -242,7 +264,6 @@ class Proposer(Acceptor):
         self.number: Optional[int] = None
         self.acceptors: Optional[List[int]] = None
         self.promises: Dict[int, PromiseMessage] = {}
-        self.accepts: Dict[int, AcceptMessage] = {}
         self._i_think_im_leader = False
         #self.handle_message.register(PromiseMessage, self._handle_promise_message)
 
@@ -265,6 +286,8 @@ class Proposer(Acceptor):
                           for m in self.promises.values()
                           if m.prev_acc_value is not None),
                          default=self.proposal)
+            assert self.number is not None
+            assert self.v is not None
             response = AcceptMessage(self.number, self.v)
             for a in self.acceptors:
                 await self.send_message_to(a, response)
@@ -280,11 +303,20 @@ class Proposer(Acceptor):
             assert n > self.number  # a rule of paxos
         self.proposal = p
         self.number = n
-        self.acceptors = self.coordinator.get_quorum_of_acceptors(exclude=[self])
-        self.promises, self.accepts = {}, {}
+        self.acceptors = self.coordinator.get_quorum_of_acceptor_ids(exclude=[])
+        self.promises = {}
         for a in self.acceptors:
             await self.send_message_to(a, PrepareMessage(n))
 
+
+class SleepyProposer(Proposer):
+    def __init__(self, sleep_for=20, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sleep_for = sleep_for
+
+    async def run(self):
+        await asyncio.sleep(self.sleep_for)
+        await super().run()
 
 class Learner(Processor):
 
@@ -294,6 +326,31 @@ class Learner(Processor):
     async def action_loop(self) -> None:
         pass
 
+class Monitor(Processor):
+    # this processor cheats in order to give a glboal view
+
+    def __init__(self, coordinater: Coordinator) -> None:
+        super().__init__(coordinater)
+        self.loop_num = 0
+
+    async def run(self) -> None:
+        while self.alive:
+            await fuzz()
+            self.loop_num += 1
+            if self.loop_num % 10 == 0:
+                self.alive = self.coordinator.report_accepted()
+        self.log('monitor killed')
+
+def all_equal(x: Iterable):
+    x = iter(x)
+    try:
+        first = next(x)
+        while True:
+            val = next(x)
+            if first != val:
+                return False
+    except StopIteration:
+        return True
 
 class db_on_exception:
 
@@ -326,12 +383,14 @@ class db_on_exception:
 async def run_paxos() -> None:
     loop = asyncio.get_event_loop()
     coord = Coordinator()
-    processors: List[Acceptor] = []
-    for i in range(3):
+    processors: List[Processor] = []
+    for i in range(4):
         mess_gen = IncProposalGenerator(i)
         processors.append(Proposer(coord, mess_gen))
-    for i in range(10):
+    for i in range(4):
         processors.append(Acceptor(coord))
+    processors.append(SleepyProposer(20, coord, IncProposalGenerator(99)))
+    processors.append(Monitor(coord))
     tasks = [p.run() for p in processors]
     with db_on_exception():
         await asyncio.gather(*tasks)

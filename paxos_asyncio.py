@@ -195,7 +195,7 @@ class Proposer(Acceptor):
         self.proposal: Optional[int] = None
         self.number: Optional[int] = None
         self.acceptors: Optional[List[int]] = None
-        self.i_think_im_leader = False
+        self._i_think_im_leader = False
         self.handle_message.register(PromiseMessage, self._handle_promise_message)
 
     @property

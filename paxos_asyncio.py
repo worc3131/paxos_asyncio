@@ -90,8 +90,7 @@ class Coordinator:
                 return ''
             return str(val * (1 if x.alive else -1))
         for item in ['accepted_value', 'accepted_number']:
-            status = ','.join(calc_status(x, 'accepted_value')
-                              for x in acceptors)
+            status = ','.join(calc_status(x, item) for x in acceptors)
             self.log(item + ' status: ' + status)
         done = acceptors[0].accepted_value is not None
         done = done and all_equal(x.accepted_value for x in acceptors)

@@ -252,7 +252,7 @@ class Acceptor(Processor):
         pass
 
 
-class Proposer(Acceptor):
+class Proposer(Processor):
 
     def __init__(self,
                  coordinator: Coordinator,
@@ -285,7 +285,7 @@ class Proposer(Acceptor):
                 await self.send_message_to(a, response)
 
     async def action_loop(self) -> None:
-        await super().action_loop()
+        #await super().action_loop()
         if self.loop_num % self.propose_every == 0:
             await self.generate_proposal()
         self.loop_num += 1
@@ -384,7 +384,7 @@ async def run_paxos() -> None:
     loop = asyncio.get_event_loop()
     coord = Coordinator()
     processors: List[Processor] = []
-    prop_args = lambda i: [coord, IncProposalGenerator(i), 30]
+    prop_args = lambda i: [coord, IncProposalGenerator(i), 50]
     for i in range(4):
         processors.append(Proposer(*prop_args(i)))
     for i in range(4):

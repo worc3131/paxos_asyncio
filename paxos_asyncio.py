@@ -9,11 +9,16 @@ import random
 from typing import Deque, List, Optional, Tuple
 
 FUZZ_MAX_TIME = 0.5
+PROB_FREEZE = 0.01
+FREEZE_SCALE = 100
 PROB_KILL = 0.01
 PROB_MESSAGE_LOSS = 0.01
 
 async def fuzz() -> None:
-    await asyncio.sleep(random.random() * FUZZ_MAX_TIME)
+    t = random.random() * FUZZ_MAX_TIME
+    if random.random() < PROB_FREEZE:
+        t *= FREEZE_SCALE
+    await asyncio.sleep(t)
 
 def should_chaos_monkey_die():
     return random.random() < PROB_KILL
@@ -30,10 +35,10 @@ def do_system_log(msg):
 class Coordinator:
     # ANSI colors
     c = (
-        "\033[0m",   # Plain
-        "\033[36m",  # Cyan
         "\033[91m",  # Red
         "\033[35m",  # Magenta
+        "\033[34m",  # Blue
+        "\033[32m",  # Green
     )
 
     def __init__(self):

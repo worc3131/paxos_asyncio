@@ -8,7 +8,11 @@ import functools
 import math
 import random
 import typing
-from typing import Deque, Dict, Iterable, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
+
+from . import message
+from . import util
+from .process_generator import IncProposalGenerator
 
 FUZZ_MAX_TIME = 1
 PROB_FREEZE = 0.01
@@ -29,9 +33,9 @@ async def run_paxos() -> None:
     processors.append(SleepyProposer(*prop_args(120), sleep_for=20))
     processors.append(Monitor(coord))
     tasks = [p.run() for p in processors]
-    with db_on_exception():
+    with util.db_on_exception():
         await asyncio.gather(*tasks)
-    do_sys_log('Done!')
+    util.do_sys_log('Done!')
 
 async def fuzz() -> None:
     t = random.random() * FUZZ_MAX_TIME
@@ -44,15 +48,6 @@ def chaos_monkey_should_die():
 
 def chaos_monkey_should_lose_message():
     return random.random() < PROB_MESSAGE_LOSS
-
-def do_log(color: str, id: int, msg : str) -> None:
-    print(color, f'[{id}] {msg}')
-
-def do_coord_log(msg):
-    print("\033[0m", f'[CO] {msg}')
-
-def do_sys_log(msg):
-    print("\033[0m", f'[SYS] {msg}')
 
 
 class Coordinator:
@@ -69,14 +64,14 @@ class Coordinator:
         self.log("created as coordinator")
 
     def log(self, msg: str) -> None:
-        do_coord_log(msg)
+        util.do_coord_log(msg)
 
     def register(self, processor: Processor) -> Tuple[int, str]:
         self.processors.append(processor)
         id = len(self.processors)-1
         return id, self.c[id % len(self.c)]
 
-    def send_letter(self, letter: Letter) -> None:
+    def send_letter(self, letter: message.Letter) -> None:
         if chaos_monkey_should_lose_message():
             self.log('CHAOS MONKEY losing message from'
                           f' {letter.frm} to {letter.to}')
@@ -110,80 +105,10 @@ class Coordinator:
             status = ','.join(calc_status(x, item) for x in acceptors)
             self.log(item + ' status: ' + status)
         done = acceptors[0].accepted_value is not None
-        done = done and all_equal(x.accepted_value for x in acceptors)
+        done = done and util.all_equal(x.accepted_value for x in acceptors)
         done = done or not any(x.alive for x in acceptors)
         return not done
 
-class ProposalGenerator(ABC):
-
-    def get_proposal(self) -> Tuple[int, int]:
-        pass
-
-
-class IncProposalGenerator(ProposalGenerator):
-
-    def __init__(self, seed: int) -> None:
-        self.x = seed
-
-    def get_proposal(self) -> Tuple[int, int]:
-        result = (self.x, self.x)
-        self.x += 1000
-        return result
-
-
-class Message(ABC):
-
-    def __str__(self):
-        raise NotImplementedError
-
-
-class Letter:
-    def __init__(self, frm: int, to: int, message: Message) -> None:
-        self.frm = frm
-        self.to = to
-        self.message = message
-
-
-class PrepareMessage(Message):
-    def __init__(self, number: int) -> None:
-        self.number = number
-
-    def __str__(self) -> str:
-        return 'PREPARE N=' + str(self.number)
-
-
-class PromiseMessage(Message):
-    def __init__(self, number: int,
-                 prev_acc_number: Optional[int],
-                 prev_acc_value: Optional[int]) -> None:
-        self.number = number
-        self.prev_acc_number = prev_acc_number
-        self.prev_acc_value = prev_acc_value
-
-    def __str__(self) -> str:
-        return f'PROMISE N={self.number},' \
-               f' PREV_ACC_N={self.prev_acc_number},' \
-               f' PREV_ACC_VAL={self.prev_acc_value}'
-
-
-class AcceptMessage(Message):
-    def __init__(self, number: int, proposal: int) -> None:
-        self.number = number
-        self.proposal = proposal
-
-    def __str__(self) -> str:
-        return f'ACCEPT N={self.number},' \
-               f' PROPOSAL={self.proposal}'
-
-
-class message_handler_decorator:
-    def __init__(self, fn):
-        self.fn = fn
-
-    def __set_name__(self, owner: Processor, name):
-        types = typing.get_type_hints(self.fn)
-        owner.handle_message.register(types['msg'], self.fn)
-        setattr(owner, name, self.fn)
 
 class Processor(ABC):
 
@@ -191,17 +116,17 @@ class Processor(ABC):
         self.coordinator = coordinator
         self.id, self.color = coordinator.register(self)
         self.alive = True
-        self.mailbox: Deque[Message] = collections.deque()
+        self.mailbox: Deque[message.Message] = collections.deque()
         self.log('created as ' + self.__class__.__name__.lower())
 
     def log(self, msg: str) -> None:
-        do_log(self.color, self.id, msg)
+        util.do_log(self.color, self.id, msg)
 
-    async def send_message_to(self, other: int, message: Message) -> None:
+    async def send_message_to(self, other: int, msg: message.Message) -> None:
         await fuzz()
-        letter = Letter(self.id, other, message)
+        letter = message.Letter(self.id, other, msg)
         self.coordinator.send_letter(letter)
-        self.log("sent message to " + str(other) + ": " + str(message))
+        self.log("sent message to " + str(other) + ": " + str(msg))
         await fuzz()
 
     async def process_mailbox(self):
@@ -214,7 +139,7 @@ class Processor(ABC):
             self.log(f"recv message from {letter.frm}: {letter.message}")
         await fuzz()
 
-    async def _handle_message_catch(self, msg: Message, frm:int) -> None:
+    async def _handle_message_catch(self, msg: message.Message, frm:int) -> None:
         raise Exception("No message handling logic for message type " +
                         msg.__class__.__name__ + " in " +
                         self.__class__.__name__ + " sent by " +
@@ -244,13 +169,13 @@ class Acceptor(Processor):
         self.accepted_number: Optional[int] = None # potentially previously accepted
         self.accepted_value: Optional[int] = None
 
-    @message_handler_decorator
-    async def _handle_prepare_message(self, msg: PrepareMessage, frm: int) -> None:
+    @message.message_handler_decorator
+    async def _handle_prepare_message(self, msg: message.PrepareMessage, frm: int) -> None:
         number = msg.number
         if self.highest_number_seen is None\
                 or self.highest_number_seen < number:
             self.highest_number_seen = number
-            response = PromiseMessage(number,
+            response = message.PromiseMessage(number,
                                  self.accepted_number,
                                  self.accepted_value)
             await self.send_message_to(frm, response)
@@ -258,15 +183,15 @@ class Acceptor(Processor):
             # TODO optional: send a denial
             pass
 
-    @message_handler_decorator
-    async def _handle_accept_message(self, msg: AcceptMessage, frm: int) -> None:
+    @message.message_handler_decorator
+    async def _handle_accept_message(self, msg: message.AcceptMessage, frm: int) -> None:
         if msg.number == self.highest_number_seen:
             self.log(f'accepted {msg.proposal}')
             self.accepted_number = msg.number
             self.accepted_value = msg.proposal
 
     async def action_loop(self) -> None:
-        super().action_loop()
+        await super().action_loop()
 
 
 class Proposer(Processor):
@@ -282,11 +207,11 @@ class Proposer(Processor):
         self.proposal: Optional[int] = None
         self.number: Optional[int] = None
         self.acceptors: Optional[List[int]] = None
-        self.promises: Dict[int, PromiseMessage] = {}
+        self.promises: Dict[int, message.PromiseMessage] = {}
 
-    @message_handler_decorator
+    @message.message_handler_decorator
     async def _handle_promise_message(self,
-                                      msg: PromiseMessage,
+                                      msg: message.PromiseMessage,
                                       frm: int) -> None:
         self.promises[frm] = msg
         assert self.acceptors is not None
@@ -297,7 +222,7 @@ class Proposer(Processor):
                          default=self.proposal)
             assert self.number is not None
             assert self.v is not None
-            response = AcceptMessage(self.number, self.v)
+            response = message.AcceptMessage(self.number, self.v)
             for a in self.acceptors:
                 await self.send_message_to(a, response)
 
@@ -316,7 +241,7 @@ class Proposer(Processor):
         self.acceptors = self.coordinator.get_quorum_of_acceptor_ids(exclude=[])
         self.promises = {}
         for a in self.acceptors:
-            await self.send_message_to(a, PrepareMessage(n))
+            await self.send_message_to(a, message.PrepareMessage(n))
 
 
 class OneShotProposer(Proposer):
@@ -359,40 +284,3 @@ class Monitor(Processor):
                 self.alive = self.coordinator.report_accepted()
         self.log('monitor killed')
 
-def all_equal(x: Iterable):
-    x = iter(x)
-    try:
-        first = next(x)
-        while True:
-            val = next(x)
-            if first != val:
-                return False
-    except StopIteration:
-        return True
-
-class db_on_exception:
-
-    def __enter__(self):
-        pass
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            import code, traceback
-            traceback.print_exc()
-            frame = self._get_last_frame(exc_tb)
-            namespace = dict(frame.f_globals)
-            namespace.update(frame.f_locals)
-            if 'exit' not in namespace:
-                def exit():
-                    raise SystemExit
-                namespace['exit'] = exit
-            try:
-                code.interact(local=namespace)
-            except SystemExit:
-                pass
-
-    @staticmethod
-    def _get_last_frame(tb):
-        while tb.tb_next:
-            tb = tb.tb_next
-        return tb.tb_frame

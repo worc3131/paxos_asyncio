@@ -34,7 +34,7 @@ async def run_paxos2():
     processors = []
     for i in range(3):
         processors.append(OneShotProposer(coord, gen(i)))
-    for i in range(3):
+    for i in range(5):
         processors.append(Acceptor(coord))
     processors.append(Monitor(coord))
     await run_all(processors)
@@ -44,7 +44,7 @@ async def run_paxos3():
     processors = []
     for i in range(3):
         processors.append(Proposer(coord, gen(i), 5))
-    for i in range(3):
+    for i in range(5):
         processors.append(Acceptor(coord))
     processors.append(Monitor(coord))
     await run_all(processors)
@@ -52,10 +52,10 @@ async def run_paxos3():
 async def run_paxos4() -> None:
     coord = Coordinator()
     processors: List[participants.Processor] = []
-    prop_args = lambda i: [coord, gen(i), 50]
-    for i in range(4):
+    prop_args = lambda i: [coord, gen(i), 10]
+    for i in range(3):
         processors.append(Proposer(*prop_args(i)))
-    for i in range(4):
+    for i in range(5):
         processors.append(Acceptor(coord))
     processors.append(SleepyProposer(*prop_args(99), sleep_for=10))
     processors.append(Monitor(coord))

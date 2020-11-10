@@ -52,7 +52,7 @@ async def run_paxos3():
 async def run_paxos4() -> None:
     coord = Coordinator()
     processors: List[participants.Processor] = []
-    prop_args = lambda i: [coord, inc(i), 50]
+    prop_args = lambda i: [coord, gen(i), 50]
     for i in range(4):
         processors.append(Proposer(*prop_args(i)))
     for i in range(4):
